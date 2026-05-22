@@ -916,7 +916,10 @@ body {
 
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <script>
+// ── FIREBASE ──
 let db = null;
 try {
   firebase.initializeApp({
@@ -929,11 +932,13 @@ try {
     appId: "1:1008599995569:web:26f9275d9eed0ad0d87e90"
   });
   db = firebase.database();
-} catch(e) {
-  console.warn('Firebase failed to init:', e);
-}
+} catch(e) { console.warn('Firebase init failed:', e); }
+
 const ADMIN_PASS = "Natedawson20!6";
 const PER = 10;
+const API_KEY = '9ce5f1a88bd38b2ef6c74b754e2ba178';
+const TOURNAMENT_START = new Date('2026-06-11');
+const IS_LIVE = new Date() >= TOURNAMENT_START;
 
 const TEAMS = [
   {id:1,name:"USA",flag:"us",group:"A"},{id:2,name:"Mexico",flag:"mx",group:"A"},
@@ -962,174 +967,373 @@ const TEAMS = [
   {id:47,name:"Slovakia",flag:"sk",group:"L"},{id:48,name:"Indonesia",flag:"id",group:"L"},
 ];
 
-// Helper to render a flag image
-function flagImg(code, size=28) {
-  return `<img src="https://flagcdn.com/w40/${code}.png" style="width:${size}px;height:auto;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.2)" onerror="this.style.display='none'">`;
+function flagImg(code, size) {
+  size = size || 28;
+  return '<img src="https://flagcdn.com/w40/' + code + '.png" style="width:' + size + 'px;height:auto;border-radius:3px">';
 }
 
-let entries = {}, qty = 1, revealed = false;
+// ── STATE ──
+var entries = {}, qty = 1, revealed = false;
+var teamStatuses = {}, scorers = [], recentResults = [];
 
-function initFirebaseListeners() {
-  if (!db) { console.warn('Firebase not available'); refresh(); return; }
-  db.ref('sweepstake/entries').on('value', s => { entries = s.val() || {}; refresh(); });
-  db.ref('sweepstake/revealed').on('value', s => {
-    revealed = s.val() === true;
-    refresh();
-    updateRevealUI();
-  });
+// ── FIREBASE LISTENERS ──
+if (db) {
+  db.ref('sweepstake/entries').on('value', function(s) { entries = s.val() || {}; refresh(); });
+  db.ref('sweepstake/revealed').on('value', function(s) { revealed = s.val() === true; refresh(); updateRevealUI(); });
+  db.ref('sweepstake/teamStatuses').on('value', function(s) { teamStatuses = s.val() || {}; renderStandings(); });
+  db.ref('sweepstake/scorers').on('value', function(s) { scorers = s.val() || []; renderGoldenBoot(); });
+  db.ref('sweepstake/results').on('value', function(s) { recentResults = s.val() || []; renderRecentResults(); });
 }
-initFirebaseListeners();
 
-function drawnIds() { return Object.values(entries).flatMap(e => e.teams.map(t => t.id)); }
-function available() { const d = new Set(drawnIds()); return TEAMS.filter(t => !d.has(t.id)); }
+// ── HELPERS ──
+function drawnIds() {
+  var ids = [];
+  Object.values(entries).forEach(function(e) { e.teams.forEach(function(t) { ids.push(t.id); }); });
+  return ids;
+}
 
-function refresh() {
-  const sold = drawnIds().length, pot = sold * PER, eagles = Math.max(0, pot - 180), pct = (sold/48*100).toFixed(1);
-  document.getElementById('hdr-pot').textContent = '£'+pot;
-  document.getElementById('hdr-left').textContent = 48-sold;
-  document.getElementById('hdr-eagles').textContent = '£'+eagles;
-  document.getElementById('prog-bar').style.width = pct+'%';
-  document.getElementById('prog-label').textContent = sold+' of 48 teams drawn · £10 per team';
-  document.getElementById('prizes-eagles').textContent = '£'+eagles;
-  document.getElementById('count-drawn').textContent = sold;
-  document.getElementById('count-avail').textContent = 48-sold;
-  // Update secret box text if revealed
-  const secretTitle = document.querySelector('.secret-title');
-  const secretSub = document.querySelector('.secret-sub');
-  if(secretTitle && secretSub) {
-    if(revealed) {
-      secretTitle.textContent = '🎉 Teams Revealed!';
-      secretSub.textContent = 'Check the Entries tab to see everyone\'s teams!';
-    } else {
-      secretTitle.textContent = 'All Secret Until the Big Reveal!';
-      secretSub.textContent = "Team assignments are kept secret to keep everyone in the mix. Who's got Brazil? Who's got England? You'll find out at the presentation! 🎉";
-    }
+function available() {
+  var drawn = new Set(drawnIds());
+  return TEAMS.filter(function(t) { return !drawn.has(t.id); });
+}
+
+function shuffle(a) {
+  var b = a.slice();
+  for (var i = b.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = b[i]; b[i] = b[j]; b[j] = tmp;
   }
-  document.getElementById('adm-sold').textContent = sold;
-  document.getElementById('adm-pot').textContent = '£'+pot;
-  document.getElementById('adm-entrants').textContent = Object.keys(entries).length;
-  document.getElementById('adm-left').textContent = 48-sold;
-  renderEntries();
-  renderAdminEntries();
+  return b;
 }
 
-function renderEntries() {
-  const list = Object.values(entries);
-  if(!list.length){
-    document.getElementById('entries-list').innerHTML='<div style="text-align:center;padding:50px 20px;color:#bbb;font-size:14px">No entries yet!<br>Be the first to draw a team 🎟️</div>';
-    return;
-  }
-  if(revealed) {
-    // REVEALED MODE — show all teams
-    document.getElementById('entries-list').innerHTML =
-      `<div style="background:linear-gradient(135deg,#E61D25,#2A398D);border-radius:14px;padding:16px;margin-bottom:14px;text-align:center;color:white">
-        <div style="font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:2px;margin-bottom:4px">🎉 THE BIG REVEAL!</div>
-        <div style="font-size:13px;color:rgba(255,255,255,0.7)">All teams are now public — let the World Cup begin!</div>
-      </div>` +
-      list.sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
-        <div class="entry-card" style="flex-direction:column;align-items:stretch">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <div><div class="ec-name">${e.name}</div><div class="ec-meta">${e.teams.length} team${e.teams.length>1?'s':''}</div></div>
-            <div class="ec-cost">£${e.teams.length*PER}</div>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${e.teams.map(t=>`
-              <div style="background:#f5f5f7;border:1px solid #e0e0e0;border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px">
-                ${flagImg(t.flag, 24)}
-                <div><div style="font-size:13px;font-weight:700">${t.name}</div><div style="font-size:10px;color:#999">Group ${t.group}</div></div>
-              </div>`).join('')}
-          </div>
-        </div>`).join('');
-  } else {
-    // SECRET MODE
-    document.getElementById('entries-list').innerHTML = list.map(e=>`
-      <div class="entry-card">
-        <div>
-          <div class="ec-name">${e.name}</div>
-          <div class="ec-meta">${e.teams.length} team${e.teams.length>1?'s':''} · ${e.time}</div>
-          <div class="ec-secret">🔒 Teams secret until reveal!</div>
-        </div>
-        <div class="ec-cost">£${e.teams.length*PER}</div>
-      </div>`).join('');
-  }
+function fmt(n) { return '£' + n.toFixed(2); }
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 2500);
 }
 
-function renderAdminEntries() {
-  const list = Object.entries(entries);
-  if(!list.length){document.getElementById('adm-entries').innerHTML='<div style="color:#bbb;font-size:13px;padding:8px 0">No entries yet</div>';return;}
-  document.getElementById('adm-entries').innerHTML = list.map(([k,e])=>`
-    <div class="adm-entry">
-      <div class="ae-info">
-        <div class="ae-name">${e.name}</div>
-        <div class="ae-meta">${e.teams.length} team${e.teams.length>1?'s':''} · £${e.teams.length*PER} · ${e.time}</div>
-        <div class="ae-teams">${e.teams.map(t=>`<span class="ae-chip">${flagImg(t.flag, 16)} ${t.name}</span>`).join('')}</div>
-      </div>
-      <button class="del-btn" onclick="delEntry('${k}','${e.name}')">🗑</button>
-    </div>`).join('');
-  renderAdminTeamList();
-  renderScorerList();
-}
-
-function changeQty(d){
-  const max = (typeof available === 'function') ? (available().length || 48) : 48;
-  qty=Math.max(1,Math.min(max,qty+d));
-  document.getElementById('qty-num').textContent=qty;
-  document.getElementById('cost-val').textContent='£'+qty*PER;
-}
-
-function onNameInput(){
-  const name = document.getElementById('name-input').value.trim();
-  document.getElementById('draw-btn').disabled = name.length < 2;
-}
-
-function shuffle(a){const b=[...a];for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b;}
-
-function enterDraw(){
-  const name=document.getElementById('name-input').value.trim();
-  if(!name)return;
-  const avail=available();
-  if(avail.length<qty){showToast('Only '+avail.length+' teams left!');return;}
-  const drawn=shuffle(avail).slice(0,qty).map(t=>({id:t.id,name:t.name,flag:t.flag,group:t.group}));
-  if(!db){showToast('Not connected to database — check your connection!');return;}
-  db.ref('sweepstake/entries').push({name,teams:drawn,time:new Date().toLocaleString('en-GB')})
-    .then(()=>{
-      document.getElementById('enter-wrap').style.display='none';
-      document.getElementById('ty-screen').classList.add('show');
-      document.getElementById('ty-msg').textContent=name+', your '+(qty>1?qty+' teams have':'team has')+' been drawn! 🎉';
-      document.getElementById('ty-amount').textContent='£'+qty*PER;
-      document.getElementById('ty-teams').innerHTML=drawn.map(t=>`
-        <div class="team-drawn">
-          <div class="td-flag">${flagImg(t.flag, 36)}</div>
-          <div class="td-info"><div class="td-name">${t.name}</div><div class="td-group">Group ${t.group}</div></div>
-          <div class="td-cost">£10</div>
-        </div>`).join('');
-    }).catch(()=>showToast('Error — check connection!'));
-}
-
-function resetEnter(){
-  qty=1;
-  document.getElementById('name-input').value='';
-  document.getElementById('qty-num').textContent='1';
-  document.getElementById('cost-val').textContent='£10';
-  document.getElementById('draw-btn').disabled=true;
-  document.getElementById('enter-wrap').style.display='block';
-  document.getElementById('ty-screen').classList.remove('show');
-}
-
-function switchTab(n,btn){
-  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
-  document.getElementById('tab-'+n).classList.add('active');
+function switchTab(n, btn) {
+  document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.pane').forEach(function(p) { p.classList.remove('active'); });
+  document.getElementById('tab-' + n).classList.add('active');
   btn.classList.add('active');
   if (n === 'results') loadResults();
 }
 
-// ── RESULTS & STANDINGS ──
-const API_KEY = '9ce5f1a88bd38b2ef6c74b754e2ba178';
-const TOURNAMENT_START = new Date('2026-06-11');
-const IS_LIVE = new Date() >= TOURNAMENT_START && API_KEY !== 'YOUR_API_KEY';
+// ── REFRESH ──
+function refresh() {
+  var sold = drawnIds().length;
+  var pot = sold * PER;
+  var eagles = Math.max(0, pot - 180);
+  var pct = (sold / 48 * 100).toFixed(1);
 
-const DEMO_RESULTS = [
+  document.getElementById('hdr-pot').textContent = '£' + pot;
+  document.getElementById('hdr-left').textContent = 48 - sold;
+  document.getElementById('hdr-eagles').textContent = '£' + eagles;
+  document.getElementById('prog-bar').style.width = pct + '%';
+  document.getElementById('prog-label').textContent = sold + ' of 48 teams drawn · £10 per team';
+  document.getElementById('prizes-eagles').textContent = '£' + eagles;
+  document.getElementById('count-drawn').textContent = sold;
+  document.getElementById('count-avail').textContent = 48 - sold;
+  document.getElementById('adm-sold').textContent = sold;
+  document.getElementById('adm-pot').textContent = '£' + pot;
+  document.getElementById('adm-entrants').textContent = Object.keys(entries).length;
+  document.getElementById('adm-left').textContent = 48 - sold;
+
+  renderEntries();
+  renderAdminEntries();
+}
+
+// ── ENTER ──
+function changeQty(d) {
+  var max = available().length || 48;
+  qty = Math.max(1, Math.min(max, qty + d));
+  document.getElementById('qty-num').textContent = qty;
+  document.getElementById('cost-val').textContent = '£' + (qty * PER);
+}
+
+function onNameInput() {
+  var name = document.getElementById('name-input').value.trim();
+  document.getElementById('draw-btn').disabled = name.length < 2;
+}
+
+function enterDraw() {
+  var name = document.getElementById('name-input').value.trim();
+  if (!name) return;
+  if (!db) { showToast('Not connected — try again!'); return; }
+  var avail = available();
+  if (avail.length < qty) { showToast('Only ' + avail.length + ' teams left!'); return; }
+  var drawn = shuffle(avail).slice(0, qty).map(function(t) {
+    return { id: t.id, name: t.name, flag: t.flag, group: t.group };
+  });
+  db.ref('sweepstake/entries').push({
+    name: name, teams: drawn, time: new Date().toLocaleString('en-GB')
+  }).then(function() {
+    document.getElementById('enter-wrap').style.display = 'none';
+    document.getElementById('ty-screen').classList.add('show');
+    document.getElementById('ty-msg').textContent = name + ', your ' + (qty > 1 ? qty + ' teams have' : 'team has') + ' been drawn!';
+    document.getElementById('ty-amount').textContent = '£' + (qty * PER);
+    document.getElementById('ty-teams').innerHTML = drawn.map(function(t) {
+      return '<div class="team-drawn"><div class="td-flag">' + flagImg(t.flag, 36) + '</div><div class="td-info"><div class="td-name">' + t.name + '</div><div class="td-group">Group ' + t.group + '</div></div><div class="td-cost">£10</div></div>';
+    }).join('');
+  }).catch(function() { showToast('Error saving — check connection!'); });
+}
+
+function resetEnter() {
+  qty = 1;
+  document.getElementById('name-input').value = '';
+  document.getElementById('qty-num').textContent = '1';
+  document.getElementById('cost-val').textContent = '£10';
+  document.getElementById('draw-btn').disabled = true;
+  document.getElementById('enter-wrap').style.display = 'block';
+  document.getElementById('ty-screen').classList.remove('show');
+}
+
+// ── ENTRIES ──
+function renderEntries() {
+  var list = Object.values(entries);
+  var el = document.getElementById('entries-list');
+  if (!list.length) {
+    el.innerHTML = '<div style="text-align:center;padding:50px 20px;color:#bbb;font-size:14px">No entries yet!<br>Be the first to draw a team</div>';
+    return;
+  }
+  if (revealed) {
+    el.innerHTML = '<div style="background:linear-gradient(135deg,#E61D25,#2A398D);border-radius:14px;padding:16px;margin-bottom:14px;text-align:center;color:white"><div style="font-family:Bebas Neue,sans-serif;font-size:28px;letter-spacing:2px;margin-bottom:4px">THE BIG REVEAL!</div><div style="font-size:13px;color:rgba(255,255,255,0.7)">All teams now public!</div></div>' +
+      list.sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(e) {
+        return '<div class="entry-card" style="flex-direction:column;align-items:stretch"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div><div class="ec-name">' + e.name + '</div><div class="ec-meta">' + e.teams.length + ' team' + (e.teams.length>1?'s':'') + '</div></div><div class="ec-cost">£' + (e.teams.length*PER) + '</div></div><div style="display:flex;flex-wrap:wrap;gap:8px">' +
+          e.teams.map(function(t) {
+            return '<div style="background:#f5f5f7;border:1px solid #e0e0e0;border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:8px">' + flagImg(t.flag, 20) + '<div><div style="font-size:13px;font-weight:700">' + t.name + '</div><div style="font-size:10px;color:#999">Group ' + t.group + '</div></div></div>';
+          }).join('') + '</div></div>';
+      }).join('');
+  } else {
+    el.innerHTML = list.map(function(e) {
+      return '<div class="entry-card"><div><div class="ec-name">' + e.name + '</div><div class="ec-meta">' + e.teams.length + ' team' + (e.teams.length>1?'s':'') + ' · ' + e.time + '</div><div class="ec-secret">Teams secret until reveal!</div></div><div class="ec-cost">£' + (e.teams.length*PER) + '</div></div>';
+    }).join('');
+  }
+}
+
+// ── ADMIN ──
+function doLogin() {
+  if (document.getElementById('admin-pw').value === ADMIN_PASS) {
+    document.getElementById('admin-login').style.display = 'none';
+    document.getElementById('admin-panel').style.display = 'block';
+  } else {
+    document.getElementById('admin-err').classList.add('show');
+    document.getElementById('admin-pw').value = '';
+  }
+}
+
+function renderAdminEntries() {
+  var list = Object.entries(entries);
+  var el = document.getElementById('adm-entries');
+  if (!list.length) {
+    el.innerHTML = '<div style="color:#bbb;font-size:13px;padding:8px 0">No entries yet</div>';
+  } else {
+    var html = '';
+    list.forEach(function(kv) {
+      var k = kv[0], e = kv[1];
+      var chips = e.teams.map(function(t){return '<span class="ae-chip">' + flagImg(t.flag,14) + ' ' + t.name + '</span>';}).join('');
+      html += '<div class="adm-entry"><div class="ae-info"><div class="ae-name">' + e.name + '</div>';
+      html += '<div class="ae-meta">' + e.teams.length + ' team' + (e.teams.length>1?'s':'') + ' &middot; &pound;' + (e.teams.length*PER) + ' &middot; ' + e.time + '</div>';
+      html += '<div class="ae-teams">' + chips + '</div></div>';
+      html += '<button class="del-btn" data-key="' + k + '" onclick="delEntry(this)">&#x1F5D1;</button></div>';
+    });
+    el.innerHTML = html;
+  }
+  renderAdminTeamList();
+  renderScorerList();
+}
+function renderAdminTeamList() {
+  var el = document.getElementById('adm-team-list');
+  if (!el) return;
+  var allTeams = {};
+  Object.values(entries).forEach(function(e){ e.teams.forEach(function(t){ allTeams[t.name]=t; }); });
+  var uniqueTeams = Object.values(allTeams);
+  if (!uniqueTeams.length) { el.innerHTML = '<div style="font-size:12px;color:#bbb">No teams drawn yet</div>'; return; }
+  var html = '';
+  uniqueTeams.forEach(function(t) {
+    var status = teamStatuses[t.name] || 'tbd';
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f5f5f5">';
+    html += flagImg(t.flag, 20);
+    html += '<span style="flex:1;font-size:13px;font-weight:600">' + t.name + '</span>';
+    html += '<select data-team="' + t.name + '" onchange="setTeamStatus(this)" style="background:#f5f5f7;border:1px solid #e0e0e0;border-radius:8px;padding:4px 8px;font-size:12px;outline:none;color:#111">';
+    html += '<option value="tbd"' + (status==='tbd'?' selected':'') + '>Playing</option>';
+    html += '<option value="active"' + (status==='active'?' selected':'') + '>Through</option>';
+    html += '<option value="eliminated"' + (status==='eliminated'?' selected':'') + '>Eliminated</option>';
+    html += '<option value="champion"' + (status==='champion'?' selected':'') + '>Champion</option>';
+    html += '</select></div>';
+  });
+  el.innerHTML = html;
+}
+function setTeamStatus(sel) {
+  if (!db) return;
+  var teamName = sel.getAttribute('data-team');
+  var status = sel.value;
+  db.ref('sweepstake/teamStatuses/' + teamName).set(status).then(function(){showToast(teamName + ' updated');});
+}
+
+function renderScorerList() {
+  var el = document.getElementById('scorer-list');
+  if (!el) return;
+  if (!scorers.length) { el.innerHTML = '<div style="font-size:12px;color:#bbb">No scorers added yet</div>'; return; }
+  el.innerHTML = scorers.map(function(s,i) {
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f5f5f5">' +
+      flagImg(s.teamFlag||'un', 18) +
+      '<span style="flex:1;font-size:12px"><strong>' + s.name + '</strong> (' + s.team + ')</span>' +
+      '<span style="font-family:Bebas Neue,sans-serif;font-size:18px;color:#E61D25">' + s.goals + '</span>' +
+      '<button onclick="removeScorer(' + i + ')" style="background:none;border:1px solid #ffcdd2;color:#E61D25;border-radius:6px;font-size:11px;padding:3px 7px;cursor:pointer">x</button></div>';
+  }).join('');
+}
+
+function addScorer() {
+  if (!db) return;
+  var name = document.getElementById('scorer-name').value.trim();
+  var team = document.getElementById('scorer-team').value.trim();
+  var goals = parseInt(document.getElementById('scorer-goals').value);
+  if (!name || !team || !goals) { showToast('Fill in all scorer fields!'); return; }
+  var match = TEAMS.find(function(t){return t.name.toLowerCase()===team.toLowerCase();});
+  var flag = match ? match.flag : 'un';
+  var updated = scorers.concat([{name:name,team:team,teamFlag:flag,goals:goals}]).sort(function(a,b){return b.goals-a.goals;});
+  db.ref('sweepstake/scorers').set(updated).then(function(){
+    document.getElementById('scorer-name').value='';
+    document.getElementById('scorer-team').value='';
+    document.getElementById('scorer-goals').value='';
+    showToast(name + ' added');
+  });
+}
+
+function removeScorer(idx) {
+  if (!db) return;
+  var updated = scorers.filter(function(_,i){return i!==idx;});
+  db.ref('sweepstake/scorers').set(updated).then(function(){showToast('Scorer removed');});
+}
+
+function delEntry(btn) {
+  if (!db) return;
+  var k = btn.getAttribute('data-key');
+  db.ref('sweepstake/entries/' + k).remove().then(function(){showToast('Entry deleted');}).catch(function(){showToast('Error');});
+}
+
+function doConfirmReset() { document.getElementById('conf-overlay').classList.add('show'); }
+
+function doReset() {
+  if (!db) return;
+  db.ref('sweepstake/entries').remove().then(function(){
+    document.getElementById('conf-overlay').classList.remove('show');
+    showToast('All entries reset');
+  });
+}
+
+// ── REVEAL ──
+function updateRevealUI() {
+  var btn = document.getElementById('reveal-btn');
+  var label = document.getElementById('reveal-status-label');
+  var copyWrap = document.getElementById('copy-msg-wrap');
+  if (!btn) return;
+  if (revealed) {
+    btn.textContent = 'HIDE TEAMS AGAIN';
+    btn.style.background = '#2A398D';
+    label.innerHTML = 'Teams are currently <strong style="color:#3CAC3B">REVEALED</strong>.';
+    if (copyWrap) copyWrap.style.display = 'block';
+  } else {
+    btn.textContent = 'REVEAL ALL TEAMS!';
+    btn.style.background = 'linear-gradient(135deg,#E61D25,#c0171e)';
+    label.innerHTML = 'Teams are currently <strong style="color:#E61D25">Secret</strong>.';
+    if (copyWrap) copyWrap.style.display = 'none';
+  }
+}
+
+function toggleReveal() {
+  if (!db) return;
+  var newVal = !revealed;
+  var msg = newVal ? 'Reveal ALL teams to everyone?' : 'Hide teams again?';
+  if (!confirm(msg)) return;
+  db.ref('sweepstake/revealed').set(newVal).then(function(){
+    showToast(newVal ? 'Teams revealed!' : 'Teams hidden');
+  });
+}
+
+
+function updateRevealUI() {
+  var btn = document.getElementById('reveal-btn');
+  var label = document.getElementById('reveal-status-label');
+  var copyWrap = document.getElementById('copy-msg-wrap');
+  if (!btn) return;
+  if (revealed) {
+    btn.textContent = 'HIDE TEAMS AGAIN';
+    btn.style.background = '#2A398D';
+    label.innerHTML = 'Teams are currently <strong style="color:#3CAC3B">REVEALED</strong>.';
+    if (copyWrap) copyWrap.style.display = 'block';
+  } else {
+    btn.textContent = 'REVEAL ALL TEAMS!';
+    btn.style.background = 'linear-gradient(135deg,#E61D25,#c0171e)';
+    label.innerHTML = 'Teams are currently <strong style="color:#E61D25">Secret</strong>.';
+    if (copyWrap) copyWrap.style.display = 'none';
+  }
+}
+
+function toggleReveal() {
+  if (!db) return;
+  var newVal = !revealed;
+  var msg = newVal ? 'Reveal ALL teams to everyone?' : 'Hide teams again?';
+  if (!confirm(msg)) return;
+  db.ref('sweepstake/revealed').set(newVal).then(function(){
+    showToast(newVal ? 'Teams revealed!' : 'Teams hidden');
+  });
+}
+
+
+function updateRevealUI() {
+  var btn = document.getElementById('reveal-btn');
+  var label = document.getElementById('reveal-status-label');
+  var copyWrap = document.getElementById('copy-msg-wrap');
+  if (!btn) return;
+  if (revealed) {
+    btn.textContent = 'HIDE TEAMS AGAIN';
+    btn.style.background = '#2A398D';
+    label.innerHTML = 'Teams are currently <strong style="color:#3CAC3B">REVEALED</strong>.';
+    if (copyWrap) copyWrap.style.display = 'block';
+  } else {
+    btn.textContent = 'REVEAL ALL TEAMS!';
+    btn.style.background = 'linear-gradient(135deg,#E61D25,#c0171e)';
+    label.innerHTML = 'Teams are currently <strong style="color:#E61D25">Secret</strong>.';
+    if (copyWrap) copyWrap.style.display = 'none';
+  }
+}
+
+function toggleReveal() {
+  if (!db) return;
+  var newVal = !revealed;
+  var msg = newVal ? 'Reveal ALL teams to everyone?' : 'Hide teams again?';
+  if (!confirm(msg)) return;
+  db.ref('sweepstake/revealed').set(newVal).then(function(){
+    showToast(newVal ? 'Teams revealed!' : 'Teams hidden');
+  });
+}
+
+function copyRevealMessage() {
+  var list = Object.values(entries).sort(function(a,b){return a.name.localeCompare(b.name);});
+  var nl = String.fromCharCode(10);
+  var lines = list.map(function(e){
+    return e.name + ' - ' + e.teams.map(function(t){return t.name;}).join(', ');
+  }).join(nl);
+  var msg = 'BLACKBURN EAGLES WORLD CUP 2026 SWEEPSTAKE' + nl + nl +
+    'Teams revealed!' + nl + nl + lines + nl + nl +
+    'Good luck everyone!' + nl +
+    'https://jasond1880.github.io/Eagles-vote/sweepstake.html';
+  navigator.clipboard.writeText(msg).then(function(){showToast('Copied! Paste into WhatsApp');}).catch(function(){
+    var ta = document.createElement('textarea');
+    ta.value = msg; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    showToast('Copied! Paste into WhatsApp');
+  });
+}
+
+// ── RESULTS ──
+var DEMO_RESULTS = [
   {home:'England',homeFlag:'gb-eng',away:'USA',awayFlag:'us',homeScore:2,awayScore:1,stage:'Group C',date:'12 Jun'},
   {home:'Brazil',homeFlag:'br',away:'Mexico',awayFlag:'mx',homeScore:3,awayScore:0,stage:'Group B',date:'12 Jun'},
   {home:'France',homeFlag:'fr',away:'Germany',awayFlag:'de',homeScore:1,awayScore:1,stage:'Group A',date:'13 Jun'},
@@ -1137,7 +1341,7 @@ const DEMO_RESULTS = [
   {home:'Spain',homeFlag:'es',away:'Japan',awayFlag:'jp',homeScore:1,awayScore:0,stage:'Group C',date:'14 Jun'},
 ];
 
-const DEMO_SCORERS = [
+var DEMO_SCORERS = [
   {name:'Kylian Mbappé',team:'France',teamFlag:'fr',goals:4},
   {name:'Vinicius Jr',team:'Brazil',teamFlag:'br',goals:3},
   {name:'Harry Kane',team:'England',teamFlag:'gb-eng',goals:2},
@@ -1145,251 +1349,81 @@ const DEMO_SCORERS = [
   {name:'Pedri',team:'Spain',teamFlag:'es',goals:2},
 ];
 
-let teamStatuses = {}, scorers = [], recentResults = [];
-
-if (db) {
-  db.ref('sweepstake/teamStatuses').on('value', s => { teamStatuses = s.val() || {}; renderStandings(); });
-  db.ref('sweepstake/scorers').on('value', s => { scorers = s.val() || []; renderGoldenBoot(); });
-  db.ref('sweepstake/results').on('value', s => { recentResults = s.val() || []; renderRecentResults(); });
-}
-
 function loadResults() {
-  if (IS_LIVE) fetchLiveResults();
   renderStandings();
   renderGoldenBoot();
   renderRecentResults();
-  const el = document.getElementById('results-updated');
+  var el = document.getElementById('results-updated');
   if (el) el.textContent = IS_LIVE ? 'Updated ' + new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : 'Demo mode';
 }
 
 function renderStandings() {
-  const list = Object.values(entries);
-  if (!list.length) {
-    document.getElementById('standings-list').innerHTML = '<div style="padding:20px;text-align:center;color:#bbb;font-size:13px">No entries yet</div>';
-    return;
-  }
-  const rows = list.map(e => {
-    const teams = e.teams.map(t => ({name:t.name, flag:t.flag, status:teamStatuses[t.name]||'tbd'}));
-    const hasChampion = teams.some(t => t.status === 'champion');
-    const hasActive = teams.some(t => t.status === 'active' || t.status === 'tbd');
-    return {entrant:e.name, teams, hasChampion, hasActive};
-  }).sort((a,b) => {
-    if (a.hasChampion) return -1; if (b.hasChampion) return 1;
-    if (a.hasActive && !b.hasActive) return -1; if (!a.hasActive && b.hasActive) return 1;
+  var list = Object.values(entries);
+  var el = document.getElementById('standings-list');
+  if (!list.length) { el.innerHTML = '<div style="padding:20px;text-align:center;color:#bbb;font-size:13px">No entries yet</div>'; return; }
+  var rows = list.map(function(e) {
+    var teams = e.teams.map(function(t){return {name:t.name,flag:t.flag,status:teamStatuses[t.name]||'tbd'};});
+    var hasChampion = teams.some(function(t){return t.status==='champion';});
+    var hasActive = teams.some(function(t){return t.status==='active'||t.status==='tbd';});
+    return {entrant:e.name,teams:teams,hasChampion:hasChampion,hasActive:hasActive};
+  }).sort(function(a,b){
+    if(a.hasChampion)return -1;if(b.hasChampion)return 1;
+    if(a.hasActive&&!b.hasActive)return -1;if(!a.hasActive&&b.hasActive)return 1;
     return 0;
   });
-
-  document.getElementById('standings-list').innerHTML = rows.map((r,i) => `
-    <div class="standing-row ${r.hasChampion?'winner':''}">
-      <div class="sr-pos">${i+1}</div>
-      <div class="sr-info">
-        <div class="sr-team">${r.entrant}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px">
-          ${r.teams.map(t=>`
-            <div style="display:flex;align-items:center;gap:4px;background:#f5f5f7;border-radius:8px;padding:3px 8px">
-              <img src="https://flagcdn.com/w20/${t.flag}.png" style="width:16px;border-radius:2px">
-              <span style="font-size:11px;font-weight:600">${t.name}</span>
-              <span class="sr-status ${t.status}">${t.status==='champion'?'🏆':t.status==='active'?'✅':t.status==='eliminated'?'❌':'🏃'}</span>
-            </div>`).join('')}
-        </div>
-      </div>
-    </div>`).join('');
+  el.innerHTML = rows.map(function(r,i){
+    return '<div class="standing-row' + (r.hasChampion?' winner':'') + '">' +
+      '<div class="sr-pos">' + (i+1) + '</div>' +
+      '<div class="sr-info"><div class="sr-team">' + r.entrant + '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px">' +
+      r.teams.map(function(t){
+        return '<div style="display:flex;align-items:center;gap:4px;background:#f5f5f7;border-radius:8px;padding:3px 8px">' +
+          '<img src="https://flagcdn.com/w20/'+t.flag+'.png" style="width:16px;border-radius:2px">' +
+          '<span style="font-size:11px;font-weight:600">'+t.name+'</span>' +
+          '<span class="sr-status '+t.status+'">'+(t.status==='champion'?'🏆':t.status==='active'?'✅':t.status==='eliminated'?'❌':'🏃')+'</span></div>';
+      }).join('') + '</div></div></div>';
+  }).join('');
 }
 
 function renderGoldenBoot() {
-  const data = scorers.length ? scorers : (IS_LIVE ? [] : DEMO_SCORERS);
-  if (!data.length) { document.getElementById('golden-boot-list').innerHTML='<div style="padding:16px;text-align:center;color:#bbb;font-size:13px">No scorer data yet</div>'; return; }
-  document.getElementById('golden-boot-list').innerHTML = data.slice(0,5).map((s,i) => {
-    const owner = Object.values(entries).find(e => e.teams.some(t => t.name===s.team));
-    return `<div class="boot-row">
-      <div class="boot-pos">${i+1}</div>
-      <img src="https://flagcdn.com/w30/${s.teamFlag||'un'}.png" style="width:24px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.15)">
-      <div class="boot-info">
-        <div class="boot-name">${s.name}</div>
-        <div class="boot-team">${s.team}${owner?` · <strong style="color:#2A398D">${owner.name}'s team</strong>`:''}</div>
-      </div>
-      <div><div class="boot-goals">${s.goals}</div><div class="boot-label">goals</div></div>
-    </div>`;
+  var data = scorers.length ? scorers : DEMO_SCORERS;
+  var el = document.getElementById('golden-boot-list');
+  if (!data.length) { el.innerHTML = '<div style="padding:16px;text-align:center;color:#bbb;font-size:13px">No scorer data yet</div>'; return; }
+  el.innerHTML = data.slice(0,5).map(function(s,i){
+    var owner = Object.values(entries).find(function(e){return e.teams.some(function(t){return t.name===s.team;});});
+    return '<div class="boot-row"><div class="boot-pos">'+(i+1)+'</div>' +
+      '<img src="https://flagcdn.com/w30/'+(s.teamFlag||'un')+'.png" style="width:24px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.15)">' +
+      '<div class="boot-info"><div class="boot-name">'+s.name+'</div>' +
+      '<div class="boot-team">'+s.team+(owner?' · <strong style="color:#2A398D">'+owner.name+' team</strong>':'')+'</div></div>' +
+      '<div><div class="boot-goals">'+s.goals+'</div><div class="boot-label">goals</div></div></div>';
   }).join('');
 }
 
 function renderRecentResults() {
-  const data = recentResults.length ? recentResults : (IS_LIVE ? [] : DEMO_RESULTS);
-  if (!data.length) { document.getElementById('recent-results-list').innerHTML='<div style="padding:16px;text-align:center;color:#bbb;font-size:13px">No results yet</div>'; return; }
-  document.getElementById('recent-results-list').innerHTML = data.slice(0,8).map(r => {
-    const homeOwner = Object.values(entries).find(e => e.teams.some(t => t.name===r.home));
-    const awayOwner = Object.values(entries).find(e => e.teams.some(t => t.name===r.away));
-    return `<div class="result-row">
-      <div class="rr-date">${r.date}</div>
-      <div class="rr-info">
-        <div class="rr-match">
-          <span class="rr-name right">${r.home}</span>
-          <img src="https://flagcdn.com/w20/${r.homeFlag}.png" style="width:18px;border-radius:2px">
-          <span class="rr-score">${r.homeScore}–${r.awayScore}</span>
-          <img src="https://flagcdn.com/w20/${r.awayFlag}.png" style="width:18px;border-radius:2px">
-          <span class="rr-name">${r.away}</span>
-        </div>
-        <div class="rr-stage">${r.stage}${homeOwner?' · '+homeOwner.name:''}${awayOwner?' vs '+awayOwner.name:''}</div>
-      </div>
-    </div>`;
+  var data = recentResults.length ? recentResults : DEMO_RESULTS;
+  var el = document.getElementById('recent-results-list');
+  if (!data.length) { el.innerHTML = '<div style="padding:16px;text-align:center;color:#bbb;font-size:13px">No results yet</div>'; return; }
+  el.innerHTML = data.slice(0,8).map(function(r){
+    var homeOwner = Object.values(entries).find(function(e){return e.teams.some(function(t){return t.name===r.home;});});
+    var awayOwner = Object.values(entries).find(function(e){return e.teams.some(function(t){return t.name===r.away;});});
+    return '<div class="result-row"><div class="rr-date">'+r.date+'</div>' +
+      '<div class="rr-info"><div class="rr-match">' +
+      '<span class="rr-name right">'+r.home+'</span>' +
+      '<img src="https://flagcdn.com/w20/'+r.homeFlag+'.png" style="width:18px;border-radius:2px">' +
+      '<span class="rr-score">'+r.homeScore+'–'+r.awayScore+'</span>' +
+      '<img src="https://flagcdn.com/w20/'+r.awayFlag+'.png" style="width:18px;border-radius:2px">' +
+      '<span class="rr-name">'+r.away+'</span></div>' +
+      '<div class="rr-stage">'+r.stage+(homeOwner?' · '+homeOwner.name:'')+(awayOwner?' vs '+awayOwner.name:'')+'</div>' +
+      '</div></div>';
   }).join('');
 }
 
-async function fetchLiveResults() {
-  try {
-    const res = await fetch('https://api-football-v1.p.rapidapi.com/v3/fixtures?league=1&season=2026&last=10', {
-      headers:{'X-RapidAPI-Key':API_KEY,'X-RapidAPI-Host':'api-football-v1.p.rapidapi.com'}
-    });
-    const data = await res.json();
-    if (data.response) {
-      const results = data.response.filter(f=>f.fixture.status.short==='FT').map(f=>({
-        home:f.teams.home.name, homeFlag:f.teams.home.name.toLowerCase().replace(/ /g,'-'),
-        away:f.teams.away.name, awayFlag:f.teams.away.name.toLowerCase().replace(/ /g,'-'),
-        homeScore:f.goals.home, awayScore:f.goals.away,
-        stage:f.league.round,
-        date:new Date(f.fixture.date).toLocaleDateString('en-GB',{day:'numeric',month:'short'})
-      }));
-      await db.ref('sweepstake/results').set(results);
-    }
-  } catch(e) { showToast('Could not fetch live results'); }
-}
+setInterval(function(){
+  if(document.getElementById('tab-results').classList.contains('active'))loadResults();
+},5*60*1000);
 
-setInterval(() => {
-  if (document.getElementById('tab-results').classList.contains('active')) loadResults();
-}, 5*60*1000);
-
-function updateRevealUI() {
-  const btn = document.getElementById('reveal-btn');
-  const label = document.getElementById('reveal-status-label');
-  const copyWrap = document.getElementById('copy-msg-wrap');
-  if(!btn) return;
-  if(revealed) {
-    btn.textContent = '🔒 HIDE TEAMS AGAIN';
-    btn.style.background = '#2A398D';
-    btn.style.boxShadow = '0 4px 16px rgba(42,57,141,0.3)';
-    label.innerHTML = 'Teams are currently <strong style="color:#3CAC3B">🎉 REVEALED</strong>. Everyone can see all team assignments!';
-    if(copyWrap) copyWrap.style.display = 'block';
-  } else {
-    btn.textContent = '🎉 REVEAL ALL TEAMS!';
-    btn.style.background = 'linear-gradient(135deg,#E61D25,#c0171e)';
-    btn.style.boxShadow = '0 4px 16px rgba(230,29,37,0.3)';
-    label.innerHTML = 'Teams are currently <strong style="color:#E61D25">🔒 Secret</strong>. Hit the button below when you\'re ready to reveal all teams at the presentation!';
-    if(copyWrap) copyWrap.style.display = 'none';
-  }
-}
-
-function copyRevealMessage() {
-  const list = Object.values(entries).sort((a,b) => a.name.localeCompare(b.name));
-  const lines = list.map(e => `👤 ${e.name} — ${e.teams.map(t => t.name).join(', ')}`).join('\n');
-  const msg = `🎉 BLACKBURN EAGLES WORLD CUP 2026 SWEEPSTAKE 🦅\n\nThe teams have been revealed! Here's who's got who:\n\n${lines}\n\n🏆 Good luck everyone!\n👉 Check the app: https://jasond1880.github.io/Eagles-vote/sweepstake.html`;
-  navigator.clipboard.writeText(msg).then(() => showToast('Message copied! Paste into WhatsApp 📋')).catch(() => {
-    // Fallback for older browsers
-    const ta = document.createElement('textarea');
-    ta.value = msg;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    showToast('Message copied! Paste into WhatsApp 📋');
-  });
-}
-
-
-  const newVal = !revealed;
-  const msg = newVal
-    ? 'This will reveal ALL team assignments to everyone. Ready for the big moment? 🎉'
-    : 'This will hide all team assignments again.';
-  if(!confirm(msg)) return;
-  db.ref('sweepstake/revealed').set(newVal).then(() => {
-    showToast(newVal ? '🎉 Teams revealed to everyone!' : '🔒 Teams hidden again');
-  });
-}
-
-
-  if(document.getElementById('admin-pw').value===ADMIN_PASS){
-    document.getElementById('admin-login').style.display='none';
-    document.getElementById('admin-panel').style.display='block';
-  }else{
-    document.getElementById('admin-err').classList.add('show');
-    document.getElementById('admin-pw').value='';
-  }
-}
-
-function renderAdminTeamList() {
-  const uniqueTeams = Object.values(
-    Object.values(entries).flatMap(e => e.teams).reduce((acc,t) => { acc[t.name]=t; return acc; }, {})
-  );
-  if (!uniqueTeams.length) { document.getElementById('adm-team-list').innerHTML='<div style="font-size:12px;color:#bbb">No teams drawn yet</div>'; return; }
-  document.getElementById('adm-team-list').innerHTML = uniqueTeams.map(t => {
-    const status = teamStatuses[t.name] || 'tbd';
-    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f5f5f5">
-      <img src="https://flagcdn.com/w20/${t.flag}.png" style="width:20px;border-radius:2px">
-      <span style="flex:1;font-size:13px;font-weight:600">${t.name}</span>
-      <select onchange="setTeamStatus('${t.name}',this.value)" style="background:#f5f5f7;border:1px solid #e0e0e0;border-radius:8px;padding:4px 8px;font-family:'Inter',sans-serif;font-size:12px;outline:none;color:#111">
-        <option value="tbd" ${status==='tbd'?'selected':''}>🏃 Playing</option>
-        <option value="active" ${status==='active'?'selected':''}>✅ Through</option>
-        <option value="eliminated" ${status==='eliminated'?'selected':''}>❌ Eliminated</option>
-        <option value="champion" ${status==='champion'?'selected':''}>🏆 Champion</option>
-      </select>
-    </div>`;
-  }).join('');
-}
-
-function setTeamStatus(teamName, status) {
-  db.ref('sweepstake/teamStatuses/'+teamName).set(status).then(()=>showToast(teamName+' → '+status+' ✓'));
-}
-
-function renderScorerList() {
-  const el = document.getElementById('scorer-list');
-  if (!el) return;
-  if (!scorers.length) { el.innerHTML='<div style="font-size:12px;color:#bbb">No scorers added yet</div>'; return; }
-  el.innerHTML = scorers.map((s,i)=>`
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f5f5f5">
-      <img src="https://flagcdn.com/w20/${s.teamFlag||'un'}.png" style="width:18px;border-radius:2px">
-      <span style="flex:1;font-size:12px"><strong>${s.name}</strong> (${s.team})</span>
-      <span style="font-family:'Bebas Neue',sans-serif;font-size:18px;color:#E61D25">${s.goals} ⚽</span>
-      <button onclick="removeScorer(${i})" style="background:none;border:1px solid #ffcdd2;color:#E61D25;border-radius:6px;font-size:11px;padding:3px 7px;cursor:pointer">✕</button>
-    </div>`).join('');
-}
-
-function addScorer() {
-  const name = document.getElementById('scorer-name').value.trim();
-  const team = document.getElementById('scorer-team').value.trim();
-  const goals = parseInt(document.getElementById('scorer-goals').value);
-  if (!name||!team||!goals) { showToast('Fill in all scorer fields!'); return; }
-  const flag = TEAMS.find(t=>t.name.toLowerCase()===team.toLowerCase())?.flag||'un';
-  const updated = [...scorers,{name,team,teamFlag:flag,goals}].sort((a,b)=>b.goals-a.goals);
-  db.ref('sweepstake/scorers').set(updated).then(()=>{
-    document.getElementById('scorer-name').value='';
-    document.getElementById('scorer-team').value='';
-    document.getElementById('scorer-goals').value='';
-    showToast(name+' added ✓');
-  });
-}
-
-function removeScorer(idx) {
-  const updated = scorers.filter((_,i)=>i!==idx);
-  db.ref('sweepstake/scorers').set(updated).then(()=>showToast('Scorer removed ✓'));
-}
-
-function delEntry(k,n){
-  db.ref('sweepstake/entries/'+k).remove().then(()=>showToast(n+"'s entry deleted ✓")).catch(()=>showToast('Error'));
-}
-
-function doConfirmReset(){document.getElementById('conf-overlay').classList.add('show');}
-
-function doReset(){
-  db.ref('sweepstake/entries').remove().then(()=>{
-    document.getElementById('conf-overlay').classList.remove('show');
-    showToast('All entries reset ✓');
-  });
-}
-
-function showToast(msg){
-  const t=document.getElementById('toast');
-  t.textContent=msg;t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),2500);
-}
+// ── INIT ──
+refresh();
 </script>
 </body>
 </html>
