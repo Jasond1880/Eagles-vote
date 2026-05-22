@@ -1062,14 +1062,15 @@ function renderAdminEntries() {
 }
 
 function changeQty(d){
-  const max=available().length;
+  const max = (typeof available === 'function') ? (available().length || 48) : 48;
   qty=Math.max(1,Math.min(max,qty+d));
   document.getElementById('qty-num').textContent=qty;
   document.getElementById('cost-val').textContent='£'+qty*PER;
 }
 
 function onNameInput(){
-  document.getElementById('draw-btn').disabled=document.getElementById('name-input').value.trim().length<2;
+  const name = document.getElementById('name-input').value.trim();
+  document.getElementById('draw-btn').disabled = name.length < 2;
 }
 
 function shuffle(a){const b=[...a];for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b;}
