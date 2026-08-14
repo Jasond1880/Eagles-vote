@@ -54,6 +54,9 @@ body { background: #f2f4f8; font-family: 'Inter', sans-serif; color: #1a1a2e; mi
 .size-opt { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: rgba(255,255,255,0.8); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; padding: 10px 4px; cursor: pointer; transition: all 0.15s; text-align: center; }
 .size-opt.selected { background: #00c853; color: #000; border-color: #00c853; }
 .size-hint { font-size: 10px; color: rgba(255,255,255,0.4); margin-bottom: 14px; }
+.num-opt { background: #f2f4f8; border: 1px solid #e0e0e0; border-radius: 8px; color: #1a1a2e; font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 700; padding: 10px 4px; cursor: pointer; transition: all 0.15s; text-align: center; }
+.num-opt.selected { background: #1a3a5c; color: white; border-color: #1a3a5c; }
+.num-opt:hover { border-color: #1a3a5c; }
 
 .gk-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .toggle-switch { width: 44px; height: 24px; background: rgba(255,255,255,0.2); border-radius: 12px; position: relative; cursor: pointer; transition: background 0.2s; flex-shrink: 0; border: none; }
@@ -180,13 +183,39 @@ body { background: #f2f4f8; font-family: 'Inter', sans-serif; color: #1a1a2e; mi
           <option value="Aidan">Aidan #20</option>
           <option value="Oscar">Oscar #21</option>
           <option value="Franco">Franco #22</option>
+          <option value="Theo">Theo — pick squad number</option>
+          <option value="Ayman">Ayman — pick squad number</option>
         </select>
       </div>
 
-      <!-- Status banner shown after player selected -->
+      <!-- Status banner -->
       <div id="kit-status-banner" style="display:none"></div>
 
-      <!-- HOME KIT (hidden if player already has one) -->
+      <!-- Squad number picker — right below player select, only for Theo/Ayman -->
+      <div id="squad-picker-wrap" style="display:none;background:rgba(255,255,255,0.95);border-radius:12px;padding:16px;margin-bottom:14px">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:2px;color:#1a3a5c;margin-bottom:4px">⭐ Pick Squad Number</div>
+        <div style="font-size:12px;color:#667788;margin-bottom:12px">Choose an available number — tap to select</div>
+        <div id="number-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">
+          <button class="num-opt" onclick="pickSquadNum(5,this)">5</button>
+          <button class="num-opt" onclick="pickSquadNum(6,this)">6</button>
+          <button class="num-opt" onclick="pickSquadNum(8,this)">8</button>
+          <button class="num-opt" onclick="pickSquadNum(9,this)">9</button>
+          <button class="num-opt" onclick="pickSquadNum(10,this)">10</button>
+          <button class="num-opt" onclick="pickSquadNum(11,this)">11</button>
+          <button class="num-opt" onclick="pickSquadNum(12,this)">12</button>
+          <button class="num-opt" onclick="pickSquadNum(13,this)">13</button>
+          <button class="num-opt" onclick="pickSquadNum(14,this)">14</button>
+          <button class="num-opt" onclick="pickSquadNum(15,this)">15</button>
+          <button class="num-opt" onclick="pickSquadNum(18,this)">18</button>
+          <button class="num-opt" onclick="pickSquadNum(19,this)">19</button>
+          <button class="num-opt" onclick="pickSquadNum(23,this)">23</button>
+          <button class="num-opt" onclick="pickSquadNum(24,this)">24</button>
+          <button class="num-opt" onclick="pickSquadNum(25,this)">25</button>
+        </div>
+        <input type="hidden" id="squad-picker" value="">
+      </div>
+
+      <!-- HOME KIT -->
       <div id="home-kit-section">
         <div class="section-divider">🏠 Home Kit</div>
         <div class="field">
@@ -216,11 +245,11 @@ body { background: #f2f4f8; font-family: 'Inter', sans-serif; color: #1a1a2e; mi
             <button class="size-opt" onclick="selectSize('home','socks','M',this)">M</button>
             <button class="size-opt" onclick="selectSize('home','socks','L',this)">L</button>
           </div>
-          <div class="size-hint">Adult sizing · most U10s will be XS or S</div>
+          <div class="size-hint">Adult sizing · most U11s will be XS or S</div>
         </div>
       </div>
 
-      <!-- AWAY KIT (always shown) -->
+      <!-- AWAY KIT -->
       <div class="section-divider">✈️ Away Kit</div>
       <div class="field">
         <label>Shirt Size</label>
@@ -279,6 +308,8 @@ body { background: #f2f4f8; font-family: 'Inter', sans-serif; color: #1a1a2e; mi
 
       <button class="submit-btn" id="submit-btn" onclick="submitSizes()" disabled>SUBMIT SIZES</button>
     </div>
+
+</div>
 
     <div class="card">
       <div class="card-hd"><div class="card-hd-label">Need help?</div></div>
@@ -412,7 +443,9 @@ var SQUAD = [
   { name: "Charles",num: 20, hasHome: true  },
   { name: "Aidan",  num: 20, hasHome: true  },
   { name: "Oscar",  num: 21, hasHome: true  },
-  { name: "Franco", num: 22, hasHome: true  }
+  { name: "Franco", num: 22, hasHome: true  },
+  { name: "Theo",   num: null, hasHome: false, pickNumber: true },
+  { name: "Ayman",  num: null, hasHome: false, pickNumber: true }
 ];
 
 var sizes = {
@@ -465,6 +498,16 @@ function onPlayerSelect() {
     sizes.home = { shirt: null, shorts: null, socks: null };
   }
 
+  // Show squad number picker for new players
+  var pickerWrap = document.getElementById('squad-picker-wrap');
+  var picker = document.getElementById('squad-picker');
+  if (info && info.pickNumber) {
+    pickerWrap.style.display = 'block';
+    picker.value = '';
+  } else {
+    pickerWrap.style.display = 'none';
+  }
+
   // Auto-toggle GK if player is a goalkeeper
   setGK(info && info.isGK === true);
   checkSubmitReady();
@@ -497,12 +540,22 @@ function toggleGK() {
   checkSubmitReady();
 }
 
+function pickSquadNum(num, btn) {
+  document.getElementById('squad-picker').value = num;
+  document.getElementById('number-grid').querySelectorAll('.size-opt').forEach(function(b) { b.classList.remove('selected'); });
+  btn.classList.add('selected');
+  checkSubmitReady();
+}
+
 function checkSubmitReady() {
   var player = document.getElementById('player-select').value;
+  var info = getPlayerInfo(player);
+  var needsNumber = info && info.pickNumber;
+  var numberOk = !needsNumber || document.getElementById('squad-picker').value;
   var homeOk = currentPlayerHasHome || (sizes.home.shirt && sizes.home.shorts && sizes.home.socks);
   var awayOk = sizes.away.shirt && sizes.away.shorts && sizes.away.socks;
   var gkOk = !isGK || (sizes.gk.shirt && sizes.gk.shorts);
-  document.getElementById('submit-btn').disabled = !(player && homeOk && awayOk && gkOk);
+  document.getElementById('submit-btn').disabled = !(player && numberOk && homeOk && awayOk && gkOk);
 }
 
 function submitSizes() {
@@ -512,7 +565,7 @@ function submitSizes() {
   var info = getPlayerInfo(player);
   var entry = {
     player: player,
-    squad: info ? info.num : '',
+    squad: (info && info.pickNumber) ? document.getElementById('squad-picker').value : (info ? info.num : ''),
     hasHome: currentPlayerHasHome,
     home: currentPlayerHasHome ? 'existing' : { shirt: sizes.home.shirt, shorts: sizes.home.shorts, socks: sizes.home.socks },
     away: { shirt: sizes.away.shirt, shorts: sizes.away.shorts, socks: sizes.away.socks },
@@ -539,6 +592,9 @@ function resetSubmit() {
   document.getElementById('gk-fields').style.display = 'none';
   document.querySelectorAll('.size-opt').forEach(function(b) { b.classList.remove('selected'); });
   document.getElementById('submit-btn').disabled = true;
+  document.getElementById('squad-picker-wrap').style.display = 'none';
+  document.getElementById('squad-picker').value = '';
+  document.getElementById('number-grid').querySelectorAll('.size-opt').forEach(function(b){b.classList.remove('selected');});
   document.getElementById('submit-wrap').style.display = 'block';
   document.getElementById('ty-screen').classList.remove('show');
 }
@@ -546,7 +602,7 @@ function resetSubmit() {
 function renderSquad() {
   var submittedPlayers = Object.keys(entries);
   var submitted = submittedPlayers.length;
-  document.getElementById('squad-progress').textContent = submitted + ' / 11 submitted';
+  document.getElementById('squad-progress').textContent = submitted + ' / 13 submitted';
 
   document.getElementById('squad-list').innerHTML = SQUAD.map(function(p) {
     var isSubmitted = submittedPlayers.includes(p.name);
@@ -570,7 +626,7 @@ function renderAdminEntries() {
   var list = Object.entries(entries);
   var submitted = list.length;
   document.getElementById('adm-submitted').textContent = submitted;
-  document.getElementById('adm-remaining').textContent = Math.max(0, 11 - submitted);
+  document.getElementById('adm-remaining').textContent = Math.max(0, 13 - submitted);
 
   var submittedNames = list.map(function(kv) { return kv[0]; });
   var missing = SQUAD.filter(function(p) { return !submittedNames.includes(p.name); });
